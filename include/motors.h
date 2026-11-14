@@ -4,90 +4,75 @@
 #include <Arduino.h>
 #include <FastAccelStepper.h>
 #include "config.h"
-
-// Pas moteur pour un tour complet de l'axe du télescope.
-#define STEPS_PER_AXIS_TURN ((double)MOTOR_STEPS * MICROSTEPS * RAPPORT_POULIE)
-
-// Vitesse de pointage rapide, en pas par seconde.
-#define SLEW_SPEED_HZ ((uint32_t)RPM * MOTOR_STEPS * MICROSTEPS / 60)
-
-// Suivi sidéral : l'axe d'ascension droite fait un tour en un jour sidéral
-// (86164 s). Intervalle entre deux pas, en microsecondes.
-#define SIDEREAL_DAY_S 86164.0
-#define TRACKING_STEP_US ((uint32_t)(SIDEREAL_DAY_S * 1e6 / STEPS_PER_AXIS_TURN))
+#include "debug.h"
 
 /**
- * Pilote les deux moteurs avec FastAccelStepper.
+ * Couche mince au-dessus de FastAccelStepper, en pas moteur.
  * Les pas sont produits par un périphérique matériel de l'ESP32 :
  * aucune tâche ne boucle sur le processeur pendant un mouvement.
+ * Seule la classe Mount appelle ces fonctions, depuis une seule tâche.
  */
 class Motors {
 public:
-    void initialize() {
+    bool initialize() {
         engine.init();
 
-        stepper_DA = engine.stepperConnectToPin(PIN_AD_STEP);
-        stepper_DEC = engine.stepperConnectToPin(PIN_DEC_STEP);
-        if (!stepper_DA || !stepper_DEC) {
-            Serial.println("Motors: stepperConnectToPin a échoué");
-            return;
+        da = engine.stepperConnectToPin(PIN_AD_STEP);
+        dec = engine.stepperConnectToPin(PIN_DEC_STEP);
+        if (!da || !dec) {
+            dbg().println("Motors: stepperConnectToPin a échoué");
+            da = dec = nullptr;
+            return false;
         }
 
-        stepper_DA->setDirectionPin(PIN_AD_DIR);
-        stepper_DEC->setDirectionPin(PIN_DEC_DIR);
+        da->setDirectionPin(PIN_AD_DIR, !AD_DIR_INVERT);
+        dec->setDirectionPin(PIN_DEC_DIR, !DEC_DIR_INVERT);
 
-        stepper_DA->setAcceleration(MOTOR_ACCEL);
-        stepper_DEC->setAcceleration(MOTOR_ACCEL);
+        da->setAcceleration(MOTOR_ACCEL);
+        dec->setAcceleration(MOTOR_ACCEL);
+        return true;
     }
 
-    /** Tourne l'axe d'ascension droite d'un angle en degrés (axe, pas moteur). */
-    void moveDA(double axisDegrees) {
-        if (!stepper_DA) return;
-        tracking = false;
-        stepper_DA->setSpeedInHz(SLEW_SPEED_HZ);
-        stepper_DA->move(degreesToSteps(axisDegrees));
+    bool ok() const { return da && dec; }
+
+    /** Compteur de pas depuis le démarrage. */
+    int32_t stepsDA() const { return da ? da->getCurrentPosition() : 0; }
+    int32_t stepsDEC() const { return dec ? dec->getCurrentPosition() : 0; }
+
+    /** Va au compteur de pas donné, à vitesse rapide. Marche aussi en plein mouvement. */
+    void gotoStepsDA(int32_t target) {
+        if (!da) return;
+        da->setSpeedInHz(SLEW_SPEED_HZ);
+        da->moveTo(target);
     }
 
-    /** Tourne l'axe de déclinaison d'un angle en degrés (axe, pas moteur). */
-    void moveDEC(double axisDegrees) {
-        if (!stepper_DEC) return;
-        stepper_DEC->setSpeedInHz(SLEW_SPEED_HZ);
-        stepper_DEC->move(degreesToSteps(axisDegrees));
+    void gotoStepsDEC(int32_t target) {
+        if (!dec) return;
+        dec->setSpeedInHz(SLEW_SPEED_HZ);
+        dec->moveTo(target);
     }
 
-    /**
-     * À appeler régulièrement : relance le suivi sidéral sur l'axe
-     * d'ascension droite dès qu'un pointage est fini.
-     */
-    void updateTracking() {
-        if (!stepper_DA || tracking || stepper_DA->isRunning()) return;
-        stepper_DA->setSpeedInUs(TRACKING_STEP_US);
-        stepper_DA->runForward();
-        tracking = true;
+    /** Suivi sidéral : rotation continue de l'axe d'ascension droite. */
+    void trackDA() {
+        if (!da) return;
+        if (da->setSpeedInUs(TRACKING_STEP_US) < 0) {
+            dbg().println("Motors: vitesse de suivi refusée");
+            return;
+        }
+        da->runForward();
     }
 
-    bool isMovingDA() { return stepper_DA && stepper_DA->isRunning() && !tracking; }
-    bool isMovingDEC() { return stepper_DEC && stepper_DEC->isRunning(); }
+    /** Arrêt avec décélération. */
+    void stopDA() { if (da) da->stopMove(); }
+    void stopDEC() { if (dec) dec->stopMove(); }
 
-    void stopDA() {
-        if (!stepper_DA) return;
-        tracking = false;
-        stepper_DA->stopMove();
-    }
-
-    void stopDEC() {
-        if (stepper_DEC) stepper_DEC->stopMove();
-    }
+    bool isRunningDA() const { return da && da->isRunning(); }
+    bool isRunningDEC() const { return dec && dec->isRunning(); }
 
 private:
     FastAccelStepperEngine engine;
-    FastAccelStepper *stepper_DA = nullptr;
-    FastAccelStepper *stepper_DEC = nullptr;
-    volatile bool tracking = false;
-
-    static int32_t degreesToSteps(double axisDegrees) {
-        return (int32_t)lround(axisDegrees / 360.0 * STEPS_PER_AXIS_TURN);
-    }
+    FastAccelStepper *da = nullptr;
+    FastAccelStepper *dec = nullptr;
 };
 
 #endif // MOTORS_H

@@ -10,7 +10,7 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             .card{background:white;padding:20px;border-radius:8px;margin-bottom:20px;box-shadow:0 2px 4px rgba(0,0,0,0.1)}
             .btn{background:#007bff;color:white;border:none;padding:10px 20px;border-radius:4px;cursor:pointer}
             .btn:hover{background:#0056b3}
-            input{padding:8px;margin:5px 0;border:1px solid #ddd;border-radius:4px;width:200px}
+            input,select{padding:8px;margin:5px 0;border:1px solid #ddd;border-radius:4px;width:200px}
         </style>
     </head>
     <body>
@@ -30,6 +30,18 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <button class="btn" onclick="sendGoto()">GOTO</button>
         </div>
     
+        <div class="card">
+            <h2>LX200</h2>
+            <p>Wi-Fi: TCP port <span id="lxPort">--</span></p>
+            <label for="lxSerial">Serial port:</label><br>
+            <select id="lxSerial">
+                <option value="pins">Pins 16 (RX) / 17 (TX)</option>
+                <option value="usb">USB socket (debug output off)</option>
+                <option value="off">None</option>
+            </select>
+            <button class="btn" onclick="saveSettings()">Save and reboot</button>
+        </div>
+
         <div class="card">
             <h2>System</h2>
             <button class="btn" onclick="reboot()">Reboot</button>
@@ -52,6 +64,16 @@ const char INDEX_HTML[] PROGMEM = R"rawliteral(
             function reboot(){
                 if(confirm('Reboot?'))fetch('/reboot').then(r=>r.json()).then(d=>{alert('Rebooting...')});
             }
+            function loadSettings(){fetch('/api/settings').then(r=>r.json()).then(s=>{
+                document.getElementById('lxSerial').value=s.lx200_serial;
+                document.getElementById('lxPort').textContent=s.lx200_tcp_port;
+            })}
+            function saveSettings(){
+                const body=new URLSearchParams({lx200_serial:document.getElementById('lxSerial').value});
+                fetch('/api/settings',{method:'POST',body:body}).then(r=>r.json())
+                .then(d=>{alert(d.ret===0?'Saved, rebooting...':'Error')});
+            }
+            loadSettings();
             setInterval(updateStatus,2000);
             updateStatus();
         </script>

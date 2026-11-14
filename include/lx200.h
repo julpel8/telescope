@@ -2,109 +2,118 @@
 #define LX200_H
 
 #include <Arduino.h>
+#include "config.h"
+#include "debug.h"
+#include "lx200_coords.h"
+#include "telescope_state.h"
 
 /**
- * @brief Classe LX200
+ * Une session LX200 par liaison (câble série ou connexion Wi-Fi).
  *
- * Cette classe implémente la réception et le traitement des commandes
- * LX200 envoyées via une interface série. Elle permet par exemple de recevoir
- * des commandes pour définir l'ascension droite (RA) et la déclinaison (DEC),
- * ou de renvoyer les coordonnées actuelles.
+ * Une commande LX200 commence par ':' et finit par '#', par exemple
+ * ":GR#" (lire l'ascension droite). La réponse part sur le même flux.
+ * Seul l'octet 0x06 (demande du type de monture) arrive sans ':' ni '#'.
+ *
+ * La session ne touche jamais aux moteurs : elle passe par TelescopeState.
  */
-class LX200 {
+class Lx200Session {
 public:
-  /**
-   * @brief Constructeur
-   * @param serial Référence à l'objet Stream (ex : Serial, Serial2, etc.)
-   */
-  LX200(Stream &serial) : serialInterface(serial) {}
-
-  /**
-   * @brief Appeler cette fonction dans loop() pour traiter les commandes entrantes.
-   */
-  void processIncomingCommands() {
-    // Lecture des données disponibles dans le buffer
-    while (serialInterface.available()) {
-      char c = serialInterface.read();
-      if (c == '#') { // Fin de commande
-        // Traite la commande complète stockée dans commandBuffer
-        processCommand(commandBuffer);
-        commandBuffer = ""; // Réinitialise le buffer
-      } else {
-        commandBuffer += c;
-      }
+    void reset() {
+        length = 0;
+        inCommand = false;
+        longFormat = true;
     }
-  }
 
-  /**
-   * @brief Définit les coordonnées internes (simulées) du télescope.
-   * @param ra Chaîne représentant l'ascension droite (format "HH:MM:SS")
-   * @param dec Chaîne représentant la déclinaison (format "+DD*MM:SS" ou "-DD*MM:SS")
-   */
-  void setCoordinates(const String &ra, const String &dec) {
-    currentRA = ra;
-    currentDEC = dec;
-  }
-
-  /**
-   * @brief Optionnel : met à jour les coordonnées (par exemple, depuis des capteurs)
-   */
-  void updateCoordinates() {
-    // Cette fonction pourrait être complétée pour lire les valeurs réelles
-    // des encodeurs ou d'autres capteurs positionnels.
-  }
+    /** Traite tous les octets reçus sur io. À appeler souvent. */
+    void poll(Stream &io) {
+        while (io.available()) {
+            char c = io.read();
+            if (!inCommand) {
+                if (c == 0x06) {
+                    io.write('P');  // monture équatoriale
+                } else if (c == ':') {
+                    inCommand = true;
+                    length = 0;
+                }
+                // Le reste est ignoré, par exemple le '#' que Stellarium
+                // envoie avant certaines commandes pour vider la ligne.
+                continue;
+            }
+            if (c == '#') {
+                buffer[length] = '\0';
+                inCommand = false;
+                handle(io, buffer);
+            } else if (c == ':') {
+                length = 0;  // nouvelle commande sans '#' avant
+            } else if (length < sizeof(buffer) - 1) {
+                buffer[length++] = c;
+            } else {
+                inCommand = false;  // commande trop longue : jetée
+            }
+        }
+    }
 
 private:
-  Stream &serialInterface;
-  String commandBuffer = "";
-  String currentRA  = "00:00:00";   // Ascension droite par défaut
-  String currentDEC = "+00*00:00";  // Déclinaison par défaut
+    char buffer[32];
+    size_t length = 0;
+    bool inCommand = false;
+    bool longFormat = true;
 
-  /**
-   * @brief Traite une commande LX200 reçue.
-   * @param command La commande (sans le caractère '#' final)
-   */
-  void processCommand(const String &command) {
-    // Exemple de traitement de quelques commandes LX200 classiques :
+    // Cible donnée par :Sr et :Sd, utilisée par :MS (pointage) et :CM (synchro).
+    double targetRaHours = 0;
+    double targetDecDeg = 0;
 
-    // Commande "Sr" : définir l'ascension droite
-    if (command.startsWith("Sr")) {
-      String ra = command.substring(2);  // Récupère la valeur après "Sr"
-      currentRA = ra;
-      // Renvoyer une confirmation (souvent "1" est renvoyé par certains télescopes)
-      serialInterface.print("1");
+    static void reply(Stream &io, const char *text) {
+        io.write(reinterpret_cast<const uint8_t *>(text), strlen(text));
     }
-    // Commande "Sd" : définir la déclinaison
-    else if (command.startsWith("Sd")) {
-      String dec = command.substring(2);
-      currentDEC = dec;
-      serialInterface.print("1");
+
+    void handle(Stream &io, const char *cmd) {
+        char out[32];
+
+        if (strcmp(cmd, "GR") == 0) {
+            lx200::formatRA(telescope.position().ra / 15.0, longFormat, out, sizeof(out) - 1);
+            strcat(out, "#");
+            reply(io, out);
+        } else if (strcmp(cmd, "GD") == 0) {
+            lx200::formatDec(telescope.position().dec, longFormat, out, sizeof(out) - 1);
+            strcat(out, "#");
+            reply(io, out);
+        } else if (strcmp(cmd, "U") == 0) {
+            longFormat = !longFormat;
+        } else if (strncmp(cmd, "Sr", 2) == 0) {
+            reply(io, lx200::parseRA(cmd + 2, targetRaHours) ? "1" : "0");
+        } else if (strncmp(cmd, "Sd", 2) == 0) {
+            reply(io, lx200::parseDec(cmd + 2, targetDecDeg) ? "1" : "0");
+        } else if (strcmp(cmd, "MS") == 0) {
+            telescope.requestGoto(targetRaHours * 15.0, targetDecDeg);
+            reply(io, "0");
+        } else if (strcmp(cmd, "CM") == 0) {
+            telescope.requestSync(targetRaHours * 15.0, targetDecDeg);
+            reply(io, "Coordinates matched.#");
+        } else if (cmd[0] == 'Q') {
+            // :Q# arrête tout. :Qn# :Qs# :Qe# :Qw# arrêtent un sens de
+            // déplacement manuel, non géré : on arrête tout aussi.
+            telescope.requestStop();
+        } else if (strcmp(cmd, "D") == 0) {
+            reply(io, telescope.isSlewing() ? "\x7F#" : "#");
+        } else if (strcmp(cmd, "GVP") == 0) {
+            reply(io, "ESP32 Telescope#");
+        } else if (strcmp(cmd, "GVN") == 0) {
+            reply(io, "1.0#");
+        } else if (strcmp(cmd, "GM") == 0) {
+            reply(io, "Site 1#");
+        } else if (strcmp(cmd, "Gt") == 0) {
+            lx200::formatLatitude(telescope.latitude(), out, sizeof(out) - 1);
+            strcat(out, "#");
+            reply(io, out);
+        } else if (strcmp(cmd, "Gg") == 0) {
+            lx200::formatLongitude(telescope.longitude(), out, sizeof(out) - 1);
+            strcat(out, "#");
+            reply(io, out);
+        } else {
+            dbg().printf("LX200: commande inconnue :%s#\n", cmd);
+        }
     }
-    // Commande "GR" : renvoyer l'ascension droite actuelle
-    else if (command.equals("GR")) {
-      serialInterface.print(currentRA);
-    }
-    // Commande "GD" : renvoyer la déclinaison actuelle
-    else if (command.equals("GD")) {
-      serialInterface.print(currentDEC);
-    }
-    // Commande "MS" : démarrer le déplacement vers les coordonnées définies
-    else if (command.equals("MS")) {
-      // Ici, vous lanceriez le processus de déplacement (pilotage des moteurs, etc.)
-      // On simule une réponse "0" indiquant que le mouvement démarre.
-      serialInterface.print("0");
-    }
-    // Commande "Q" : arrêter le déplacement en cours
-    else if (command.equals("Q")) {
-      // Arrêter les moteurs, par exemple.
-      // Optionnel : renvoyer une réponse ou rien.
-    }
-    // Commande "Gg" : renvoyer le nom de l'objet courant (si applicable)
-    else if (command.equals("Gg")) {
-      serialInterface.print("No Object");
-    }
-    // D'autres commandes peuvent être ajoutées ici en fonction de vos besoins.
-  }
 };
 
 #endif // LX200_H

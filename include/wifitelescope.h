@@ -5,6 +5,7 @@
 #include <ESPmDNS.h>
 #include <WiFiUdp.h>
 #include <ArduinoOTA.h>
+#include "debug.h"
 
 class WifiTelescope {
 public:
@@ -24,12 +25,12 @@ public:
         WiFi.begin(ssid, password);
         
         for (int attempt = 0; attempt < 4; attempt++) {
-            Serial.println(attempt);
+            dbg().println(attempt);
             delay(2500);
             
             if (WiFi.waitForConnectResult() == WL_CONNECTED) {
                 setupOTA();
-                Serial.println(WiFi.localIP());
+                dbg().println(WiFi.localIP());
                 MDNS.begin("telescope");
                 ArduinoOTA.begin();
                 return true;
@@ -57,22 +58,22 @@ private:
         ArduinoOTA
             .onStart([]() {
                 String type = (ArduinoOTA.getCommand() == U_FLASH) ? "sketch" : "filesystem";
-                Serial.println("Start updating " + type);
+                dbg().println("Start updating " + type);
             })
             .onEnd([]() {
-                Serial.println("\nEnd");
+                dbg().println("\nEnd");
             })
             .onProgress([](unsigned int progress, unsigned int total) {
-                Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+                dbg().printf("Progress: %u%%\r", (progress / (total / 100)));
             })
             .onError([](ota_error_t error) {
-                Serial.printf("Error[%u]: ", error);
+                dbg().printf("Error[%u]: ", error);
                 switch (error) {
-                    case OTA_AUTH_ERROR: Serial.println("Auth Failed"); break;
-                    case OTA_BEGIN_ERROR: Serial.println("Begin Failed"); break;
-                    case OTA_CONNECT_ERROR: Serial.println("Connect Failed"); break;
-                    case OTA_RECEIVE_ERROR: Serial.println("Receive Failed"); break;
-                    case OTA_END_ERROR: Serial.println("End Failed"); break;
+                    case OTA_AUTH_ERROR: dbg().println("Auth Failed"); break;
+                    case OTA_BEGIN_ERROR: dbg().println("Begin Failed"); break;
+                    case OTA_CONNECT_ERROR: dbg().println("Connect Failed"); break;
+                    case OTA_RECEIVE_ERROR: dbg().println("Receive Failed"); break;
+                    case OTA_END_ERROR: dbg().println("End Failed"); break;
                 }
             });
     }
