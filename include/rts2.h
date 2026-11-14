@@ -5,6 +5,7 @@
 #include <ESPAsyncWebServer.h>
 #include "ArduinoJson.h"
 #include "html_page.h"
+#include "telescope_state.h"
 
 class RTS2 {
 public:
@@ -46,14 +47,15 @@ public:
             const size_t capacity = JSON_OBJECT_SIZE(1) + JSON_OBJECT_SIZE(3) + JSON_OBJECT_SIZE(5);
             DynamicJsonDocument doc(capacity);
             JsonObject d = doc.createNestedObject("d");
-            d["LONGITUD"] = longitude;
-            d["LATITUDE"] = latitude;
-            d["ALTITUDE"] = altitude;
+            d["LONGITUD"] = telescope.longitude();
+            d["LATITUDE"] = telescope.latitude();
+            d["ALTITUDE"] = telescope.altitude();
             d["target_distance"] = 0;
 
             JsonObject d_TEL = d.createNestedObject("TEL");
-            d_TEL["ra"] = actual_da;
-            d_TEL["dec"] = actual_dec;
+            TelescopeState::Coords pos = telescope.position();
+            d_TEL["ra"] = pos.ra;
+            d_TEL["dec"] = pos.dec;
 
             String json;
             serializeJson(doc, json);
@@ -73,10 +75,7 @@ public:
                 int d = moveCmd.indexOf(" ", r + 1);
                 double ra = moveCmd.substring(r + 1, d).toDouble();
                 double dec = moveCmd.substring(d + 1).toDouble();
-                goto_da = ra;
-                move_da = true;
-                goto_dec = dec;
-                move_dec = true;
+                telescope.requestGoto(ra, dec);
                 request->send(200, "application/json", "{\"ret\": 0}");
             }
         });
